@@ -17,6 +17,13 @@ This repository contains code from SGLang (https://github.com/sgl-project/sglang
   environment variable SGLANG_OFFLOAD_EMBEDDING_TO_HOST instead of the --offload-embedding-to-host server argument,
   and the edits are applied at image build time by anchored text replacement.
 
+- docker/k1/patches/*.py
+  Scripts written for this repository that modify SGLang v0.5.20 source files at image build time
+  (models/qwen3_5.py, layers/attention/flashinfer_backend.py, mem_cache/memory_pool.py,
+  model_executor/runner/base_runner.py, model_executor/runner/flashinfer_autotune.py, managers/overlap_utils.py)
+  and add one module (speculative/syncfree_seam.py). Every modified region carries a "k1 pN" (or "p6") comment, and every
+  change is behind an environment switch that is off by default.
+
 Model weights are not included. They are published by their owners under their own licenses:
 Qwen (Qwen3.8-27B), gittensor-model-hub (Qwen3.8-27B-NVFP4-RTX5090), RadixArk (Qwen3.8-27B-NVFP4),
 NVIDIA (Qwen3.6-35B-A3B-NVFP4).

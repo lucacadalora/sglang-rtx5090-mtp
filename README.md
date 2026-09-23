@@ -4,9 +4,11 @@ Qwen3.8-27B (NVFP4) on a single RTX 5090 under Windows 11 + WSL2, served with SG
 **1.6× faster decode per stream and in total, 41% less GPU energy per token, and the full 147,456-token window**,
 by turning on the model's own multi-token-prediction (MTP) head and moving the input-embedding table to host RAM.
 
-No custom kernels. This is known techniques, two open SGLang pull requests, and a fix for a WSL2 slowdown that
-silently cost 10-85% of decode speed. The value is in the measurements and the gates: every change went through
-the same A/B harness with correctness checks before it served real traffic.
+The first layer is known techniques, two open SGLang pull requests, and a fix for a WSL2 slowdown that silently
+cost 10-85% of decode speed. The second layer, **k1**, is five profile-driven patches to SGLang's kernels and
+scheduler for the MTP cycle, four of which run in production with output identical to before
+([docs/K1_KERNELS.md](docs/K1_KERNELS.md)). Every change went through the same A/B harness with correctness checks
+before it served real traffic.
 
 ![Where the single-stream gain came from](docs/img/bridge.svg)
 
@@ -47,6 +49,15 @@ Greedy output departs from the plain server at a near-tie token, as expected whe
    driver (WDDM) pages model memory to system RAM and decode fell from 96 to about 15 tok/s, then stayed near 75
    until a restart. [scripts/launch.sh](scripts/launch.sh) sizes memory from the desktop's measured VRAM, keeps
    1,792 MiB free, counts the 420 MiB driver reserve, and has the server return cached blocks when idle.
+4. **k1 kernel and runtime patches.** A profile of the live MTP cycle showed the FP4 weight GEMMs already at 91% of
+   bandwidth, so no GEMM was rewritten. The time lost elsewhere is 16-18% GPU idle from seven blocking CPU syncs per
+   cycle, a bf16 projection that cuBLAS runs 9x too slowly at M = 4, and unfused small kernels. Five env-gated
+   patches ([docker/k1](docker/k1)) attack those. Four ship: a sync-free draft/verify seam, output-layer autotune, one
+   more SiLU+FP4 fusion, and skipping a no-op KV division. Their temp-0 output is identical to before (53/53
+   answers). Measured +2% to +15.5% single-stream in a noisy window; the fifth (+6%) changes greedy text and is held
+   back. Details and the honest caveats: [docs/K1_KERNELS.md](docs/K1_KERNELS.md).
+
+![Where one MTP cycle goes](docs/img/mtp_cycle.svg)
 
 ## Why it works
 
@@ -82,7 +93,7 @@ Run as root inside WSL, from the repo root, with LF line endings (`git config co
    (`MTP_SOURCE_SNAPSHOT`). Optionally save Qwen's official `chat_template.jinja` from `Qwen/Qwen3.8-27B` as
    `/opt/sglang/templates/qwen3.8-upstream.jinja`; the launcher uses it when present.
 
-2. Build the two images (CPU only) and run the UVA go/no-go test:
+2. Build the three images (MTP fix, host embedding, k1; CPU only) and run the UVA go/no-go test:
 
    ```bash
    bash docker/build.sh
@@ -108,6 +119,9 @@ Run as root inside WSL, from the repo root, with LF line endings (`git config co
    python3 bench/ab_bench.py --label mine
    ```
 
+The `27b-mtp` profile uses the k1 image with its four output-identical switches when it is built; `K1=0` keeps the
+pre-k1 image. For a speed check that proves nothing changed in the answers, warm the server up once, then run
+`python3 bench/tok_equal.py record --out a.json --xlong` on one build and `compare --ref a.json` on the other.
 To roll back to the plain model, relaunch with `PROFILE=27b`. `PROFILE=moe` serves Qwen3.6-35B-A3B NVFP4 instead
 (303 tok/s single stream, 1,321 at 8 streams, 0.69 J per token); it needs `--moe-runner-backend flashinfer_cutlass`
 on the 5090, which the launcher sets.
@@ -120,11 +134,17 @@ on the 5090, which the launcher sets.
 | [scripts/graft_mtp.py](scripts/graft_mtp.py) | Builds the gittensor + MTP checkpoint from two local snapshots |
 | [docker/mtpfix](docker/mtpfix) | v0.5.20 + PR #37155 |
 | [docker/embhost](docker/embhost) | + PR #37826 backport (env-gated) and the WSL2 UVA test |
+| [docker/k1](docker/k1) | + five anchored, env-gated kernel/runtime patches (p1, p2, p3, p6, p7) and the build check |
 | [bench/ab_bench.py](bench/ab_bench.py) | A/B harness: server-side decode, prefill, energy, correctness fingerprint |
+| [bench/tok_equal.py](bench/tok_equal.py) | Temp-0 equality of 50 prompts (+3 at 32K/64K/120K) between two builds, with the p6 guard-log check |
+| [bench/near_tie.py](bench/near_tie.py) | Top-1 vs top-2 margin at the first token where greedy text diverges |
+| [bench/accept_len.sh](bench/accept_len.sh) | MTP acceptance length and per-window cycle time from the server log |
+| [bench/profile](bench/profile) | Live torch-profiler capture (no restart) and a kernel/idle-gap summariser |
 | [bench/gates.py](bench/gates.py) | Functional gates: tools, thinking, image, long recall, cache churn |
 | [bench/arith_eval.py](bench/arith_eval.py) | 20 arithmetic problems with thinking on |
-| [bench/results](bench/results) | Raw rows from 23 September 2026 |
+| [bench/results](bench/results) | Raw rows from 23 and 24 September 2026 |
 | [docs/REPORT.md](docs/REPORT.md) | The full write-up: physics, KV math, paging, MTP, rejected ideas |
+| [docs/K1_KERNELS.md](docs/K1_KERNELS.md) | The k1 write-up: cycle profile, reviewed plan, patches, test method, results |
 
 ## Caveats
 
@@ -134,6 +154,10 @@ on the 5090, which the launcher sets.
   with MTP) were measured on this card and driver. Check `nvidia-smi` on yours.
 - MTP's gain shrinks with context (1.6× short, 1.4× at 61K, 1.3× at 129K). The long runs sampled at temperature 0.6
   and acceptance was not logged per run, so how much is sampling and how much is depth is still open.
+- k1's speed gain is not pinned down: in its test window the desktop and Windows background work moved the
+  single-stream cycle between 15.8 and 21.1 ms, more than the effect. Adjacent pairs gave +15.5% and +1.7%.
+- k1's p1 (tiny GEMM for the bf16 projection) is faster but changes greedy text (a 0.75-nat swing at one token),
+  so it stays off until a larger quality evaluation.
 - Model weights are not included. Download them from their publishers and follow their licenses.
 
 ## Tested and rejected

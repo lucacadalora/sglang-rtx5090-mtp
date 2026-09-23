@@ -10,7 +10,9 @@
 #   27b-mtp  gittensor-model-hub/Qwen3.8-27B-NVFP4-RTX5090 @5b7a687 + the grafted bf16 MTP head (scripts/graft_mtp.py),
 #            image local/sglang:v0.5.20-cu130-mtpfix-embhost (docker/build.sh): EAGLE 3 steps / top-k 1 / 4 draft tokens
 #            with ReplaySSM verification, input embedding in pinned host RAM, 147,456-token window, 5 running.
-#            Falls back to the plain 27B with a WARNING if the graft or the image is missing.
+#            When the k1 image exists (docker/k1), it runs that instead with the four output-identical k1 switches on
+#            (docs/K1_KERNELS.md); K1=0 keeps the pre-k1 image. Falls back to the plain 27B with a WARNING if the graft
+#            or the MTP image is missing.
 #   27b      the same weights without MTP on the stock image.
 #   moe      nvidia/Qwen3.6-35B-A3B-NVFP4 @1355db6a on the stock image, 131,072-token window, 8 running.
 #
@@ -25,7 +27,8 @@
 # when idle (SGLANG_EMPTY_CACHE_INTERVAL). Watch for it with:  nvidia-smi dmon -s pmt  (GB/s of PCIe during decode
 # plus < 0.5 GB free = paging; healthy decode moves 15-80 MB/s).
 #
-# Knobs (env vars): PROFILE, MEM_FRACTION (overrides auto-sizing; pass it with DRY_RUN=1 while a server is running,
+# Knobs (env vars): PROFILE, K1 (0 = pre-k1 image), K1_EXTRA_ENV (extra "-e NAME=VAL" for the k1 container),
+# MEM_FRACTION (overrides auto-sizing; pass it with DRY_RUN=1 while a server is running,
 # or its VRAM is counted as desktop use), HEADROOM_MIB, NONSTATIC_MIB, DESKTOP_MIN_MIB (assume at least this much
 # desktop VRAM, e.g. at Windows logon before apps open), CONTEXT_LENGTH, MAX_RUNNING, MAMBA_SLOTS, KV_DTYPE, IMAGE,
 # HOST_PORT, CONTAINER_NAME, EXTRA_ARGS.
@@ -39,6 +42,12 @@ GT_SNAPSHOT=huggingface/hub/models--gittensor-model-hub--Qwen3.8-27B-NVFP4-RTX50
 GT_MTP_DIR=huggingface/local/gittensor-mtp
 MOE_SNAPSHOT=huggingface/hub/models--nvidia--Qwen3.6-35B-A3B-NVFP4/snapshots/1355db6a052410cfd62085d94b58866fd0f2c3c5
 MTP_IMAGE=local/sglang:v0.5.20-cu130-mtpfix-embhost
+# k1: the same image plus env-gated kernel/runtime patches (docker/k1), every one default off. The four below give
+# temp-0 output identical to the pre-k1 server (53/53 test answers); SGLANG_GDN_BA_TINY_GEMM=1 is faster but moves
+# greedy text, so it is left off (add it through K1_EXTRA_ENV="-e SGLANG_GDN_BA_TINY_GEMM=1" to experiment).
+K1_IMAGE=local/sglang:v0.5.20-cu130-mtpfix-embhost-k1
+K1_ENV="-e SGLANG_KV_SKIP_UNIT_SCALE_DIV=1 -e SGLANG_AUTOTUNE_TARGET_LMHEAD=1 -e SGLANG_ATTN_MLP_SILU_FP4_FUSION=1 -e SGLANG_EAGLE_SYNCFREE_SEAM=1"
+PROFILE_DOCKER_ENV=""
 # Optional: Qwen/Qwen3.8-27B's official chat_template.jinja saved under this name. The gittensor repo ships its own
 # rewritten template; with this file present the official one is used instead (that is what we served).
 TEMPLATE=templates/qwen3.8-upstream.jinja
@@ -81,6 +90,12 @@ case "$PROFILE" in
       # host RAM through UVA; bit-exact, 12 us per decode step). Measured mean accept length 2.57.
       MODEL=/root/.cache/$GT_MTP_DIR
       PROFILE_IMAGE=$MTP_IMAGE
+      if [ "${K1:-1}" = 1 ] && { [ "${DRY_RUN:-0}" = 1 ] || docker image inspect "$K1_IMAGE" >/dev/null 2>&1; }; then
+        PROFILE_IMAGE=$K1_IMAGE
+        PROFILE_DOCKER_ENV="$K1_ENV ${K1_EXTRA_ENV:-}"
+      elif [ "${K1:-1}" = 1 ]; then
+        echo "note: $K1_IMAGE not built (docker/build.sh); MTP on the pre-k1 image"
+      fi
       PROFILE_OFFLOAD_EMBEDDING=1
       WEIGHT_MIB=15700                     # target without the embedding + bf16 MTP layer + ReplaySSM ring (within 0.4%)
       KV_KIB_FP8=34                        # EAGLE adds the MTP layer's own KV
@@ -206,6 +221,7 @@ docker run -d --name "$NAME" --gpus all --ipc=host \
   -e SGLANG_FLASHINFER_AUTOTUNE_EXTEND="${AUTOTUNE_EXTEND:-1}" \
   -e SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK="${MAMBA_SKIP_DECODE_LOCK:-$PROFILE_SKIP_LOCK}" \
   -e SGLANG_OFFLOAD_EMBEDDING_TO_HOST="${OFFLOAD_EMBEDDING:-$PROFILE_OFFLOAD_EMBEDDING}" \
+  $PROFILE_DOCKER_ENV \
   "$IMAGE" "${SERVE_ARGS[@]}"
 # Container env (all present in v0.5.20 environ.py, except OFFLOAD_EMBEDDING, which the embhost image adds):
 #   PYTHONPYCACHEPREFIX  bytecode survives container recreation (~13 s per boot).

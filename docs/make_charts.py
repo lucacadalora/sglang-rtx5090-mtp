@@ -184,3 +184,44 @@ ax.grid(True, axis="y", color=GRID, lw=0.8)
 ax.set_axisbelow(True)
 ax.set_title("Where the single-stream gain came from, and what is left")
 save(fig, "bridge.svg")
+
+# 7. where one single-stream MTP cycle goes (torch profiler, 40 cycles, 17.22 ms profiled; bench/profile)
+parts = [  # (label, ms per cycle, what attacks it)
+    ("FP4 weight GEMMs (260 calls, 91% of bandwidth)", 10.16, "already near the roofline"),
+    ("GPU idle: CPU syncs + graph launch (WDDM)", 2.77, "p6 sync-free seam"),
+    ("Draft layer bf16 GEMMs", 1.48, "next: NVFP4 draft layer"),
+    ("Norms, FP4 activation quant, copies", 1.24, "p2, p7 fusions"),
+    ("bf16 in_proj_ba at M=4 (exposed part)", 0.80, "p1 tiny GEMM (held back)"),
+    ("GDN recurrent + ReplaySSM kernels", 0.52, "left as is"),
+    ("Verify attention", 0.25, "left as is"),
+]
+fig, ax = plt.subplots(figsize=(10, 3.8))
+ys = list(range(len(parts)))[::-1]
+for y, (lab, ms, fix) in zip(ys, parts):
+    ax.barh(y, ms, color=GRAY if "already" in fix or "left" in fix else BLUE, height=0.6)
+    ax.text(ms + 0.08, y, f"{ms:.2f} ms  ({fix})", va="center", fontsize=9, color=INK)
+ax.set_yticks(ys, [p[0] for p in parts])
+ax.set_xlim(0, 15.5)
+ax.set_xlabel("ms per MTP cycle (one stream; the cycle is 17.2 ms profiled, ~16.2 ms unprofiled)")
+ax.set_title("Where one draft-and-verify cycle goes (blue = attacked by k1 or next)")
+ax.grid(True, axis="x", color=GRID, lw=0.8)
+ax.set_axisbelow(True)
+save(fig, "mtp_cycle.svg")
+
+# 8. the k1 A/B window, in time order (single-stream decode, server-side median)
+runs = [("prod\nbefore k1", 126.6, 0), ("k1\nall off", 126.1, 0), ("k1 +\np1 p2 p3 p7", 133.9, 1),
+        ("k1 + all\n(+ p6)", 145.3, 1), ("k1 safe\n(no p1)", 162.0, 1), ("k1\nall off", 140.3, 0),
+        ("production\nk1 safe", 142.7, 1)]
+fig, ax = plt.subplots(figsize=(10, 3.8))
+for i, (lab, v, on) in enumerate(runs):
+    ax.bar(i, v, color=BLUE if on else GRAY, width=0.6)
+    ax.text(i, v + 2, f"{v:.1f}", ha="center", fontsize=9, color=INK)
+ax.set_xticks(range(len(runs)), [r[0] for r in runs], fontsize=8.5)
+ax.set_ylabel("Decode, 1 stream (tok/s)")
+ax.set_ylim(0, 185)
+ax.text(-0.3, 176, "Adjacent pairs: k1 safe vs the next k1-all-off +15.5%; that all-off vs production k1 safe +1.7%",
+        fontsize=9, color=MUTED)
+ax.set_title("k1 A/B, 24 Sep 03:20-04:40, in run order (gray = switches off, blue = on); the machine drifted")
+ax.grid(True, axis="y", color=GRID, lw=0.8)
+ax.set_axisbelow(True)
+save(fig, "k1_ab.svg")
