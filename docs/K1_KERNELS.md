@@ -95,6 +95,13 @@ estimated at about +15% single-stream and -10% J/token); 7 running requests inst
 `SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK` (needs a soak); and, on the owner's side, taking the desktop off the 5090 (idle
 52 W at P3 vs 14 W at P8, and no GPU time-slicing) and an iso-clock undervolt.
 
+Where hand-written kernels (CUDA C++ with inline PTX, the lowest practical level on NVIDIA, which publishes no
+assembler for Blackwell's machine code) would pay, from the same profile: a fused kernel for the 48 recurrent
+layers (convolution update, gates, state update and norm in one pass; estimated +2-4%, testable bit for bit against
+today's path), and one persistent kernel for the whole verify step, which would remove the remaining launch gaps and
+small-kernel tails (estimated +10-20%, weeks of work, specific to this model). Rewriting the FP4 GEMMs is not on the
+list: at 91% of rated bandwidth they have at most about 0.9 ms per cycle left to give.
+
 Rejected with reasons: a custom swap-AB NVFP4 GEMM (80+ hours for about 0.3 ms), `--speculative-draft-model-quantization`
 (a no-op on CUDA in v0.5.20), the default adaptive speculation config (drops to 0-1 draft steps at high batch), and
 the metadata glue graph (would freeze the host-fed plans).

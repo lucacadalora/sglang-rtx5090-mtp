@@ -1,14 +1,41 @@
 # sglang-rtx5090-mtp
 
-Qwen3.8-27B (NVFP4) on a single RTX 5090 under Windows 11 + WSL2, served with SGLang v0.5.20:
+Faster, cheaper LLM serving on one consumer GPU, by measuring where the time goes and fixing the system around the
+kernels. Qwen3.8-27B (NVFP4) on a single RTX 5090 under Windows 11 + WSL2, served with SGLang v0.5.20:
 **1.6× faster decode per stream and in total, 41% less GPU energy per token, and the full 147,456-token window**,
-by turning on the model's own multi-token-prediction (MTP) head and moving the input-embedding table to host RAM.
+plus a layer of runtime patches (k1) whose output is identical to the server without them.
 
-The first layer is known techniques, two open SGLang pull requests, and a fix for a WSL2 slowdown that silently
-cost 10-85% of decode speed. The second layer, **k1**, is five profile-driven patches to SGLang's kernels and
-scheduler for the MTP cycle, four of which run in production with output identical to before
-([docs/K1_KERNELS.md](docs/K1_KERNELS.md)). Every change went through the same A/B harness with correctness checks
-before it served real traffic.
+## Our approach
+
+This is systems engineering on top of existing kernels, not a new kernel library. The FP4 matrix kernels that do
+most of the work already run at 91% of the card's memory bandwidth, so rewriting them in CUDA, PTX or assembly
+could win a few percent at most. The big wins were elsewhere, and finding them took measurement, not guesswork.
+
+```mermaid
+flowchart LR
+  A["Measure<br/>roofline + live profile"] --> B["Find the waste<br/>idle GPU, paging,<br/>bad kernel choice"]
+  B --> C["Cheapest fix first<br/>algorithm, memory,<br/>scheduling"]
+  C --> D["Gate it<br/>same answers +<br/>quality tests"]
+  D --> E["Ship behind a switch<br/>default off,<br/>one-line rollback"]
+```
+
+1. **Measure before changing anything.** A roofline model says what the card's memory bandwidth allows, and a live
+   profiler trace of the decode cycle says where the time actually goes. Throughput is read from the server's own
+   counters, not a client stopwatch.
+2. **Do less work before doing work faster.** Decode is limited by reading 14.5 GB of weights per step. MTP
+   speculative decoding gets 2.57 tokens out of each read, a bigger gain than any kernel speed-up available here.
+3. **Fix the system around the kernels.** The waste was a Windows driver paging model memory out to RAM, the GPU
+   idling 16-18% of every cycle while the CPU synchronised, and one badly chosen library kernel. Those are fixed with
+   memory sizing, scheduler patches and routing work to kernels that already exist.
+4. **Same answers, or it does not ship.** Every patch sits behind an environment switch that is off by default and is
+   anchored to the exact upstream source, so a different SGLang version fails the build. A change ships only if
+   temp-0 output stays identical on 53 test prompts (up to 120K tokens) and the quality gates pass. The one faster
+   patch that changed answers is held back.
+5. **Report what was measured.** Medians with ranges, noisy test windows, and every rejected idea with its reason.
+
+Custom kernels come next only where the profile shows real headroom: a fused kernel for the 48 recurrent layers
+(estimated +2-4%) or one persistent kernel for the whole verify step (estimated +10-20%, weeks of work). See
+[docs/K1_KERNELS.md](docs/K1_KERNELS.md#next).
 
 ![Where the single-stream gain came from](docs/img/bridge.svg)
 
