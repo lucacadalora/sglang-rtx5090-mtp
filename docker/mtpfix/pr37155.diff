@@ -1,0 +1,94 @@
+diff --git a/python/sglang/srt/managers/scheduler.py b/python/sglang/srt/managers/scheduler.py
+index 8dc2f21b9faa..af4967ff4a1b 100644
+--- a/python/sglang/srt/managers/scheduler.py
++++ b/python/sglang/srt/managers/scheduler.py
+@@ -1008,6 +1008,11 @@ def init_target_memory_pool(self):
+ 
+     def init_memory_pools(self):
+         """Allocate KV cache pools for target and draft workers."""
++        if self.draft_worker is not None:
++            # Before the target pool is sized: the draft's duplicate,
++            # vocab-sized embed/lm_head are released here, so the profiler
++            # counts those bytes as free and gives them to the KV cache.
++            self.draft_worker.share_target_embed_and_head()
+         self.init_target_memory_pool()
+         # Lands the retraction backend on the disagg bag before the draft
+         # worker's HiCache plan reads it.
+diff --git a/python/sglang/srt/speculative/base_spec_worker.py b/python/sglang/srt/speculative/base_spec_worker.py
+index 7f6edb336209..21640eef5820 100644
+--- a/python/sglang/srt/speculative/base_spec_worker.py
++++ b/python/sglang/srt/speculative/base_spec_worker.py
+@@ -58,6 +58,7 @@ class EagleDraftWorkerBase(ABC):
+     # topk=1 chain constants for draft_forward's fast path; None when topk > 1.
+     _topk1_parents_prealloc: Optional[torch.Tensor] = None
+     _topk1_score_indices_prealloc: Optional[torch.Tensor] = None
++    _embed_and_head_shared: bool = False
+ 
+     def __init__(self) -> None:
+         self._specialized_graph_memory_usage: dict[str, float] = {}
+@@ -102,6 +103,23 @@ def preloaded_weights_bytes(self) -> int:
+     def alloc_memory_pool(self, **kwargs):
+         pass
+ 
++    def share_target_embed_and_head(self) -> None:
++        """Bind the target's embedding/lm_head into the draft model(s).
++
++        MTP-style drafts build their own vocab-sized embed + lm_head while
++        loading and hand both back here (2 * vocab * hidden / tp bytes -- 2.4
++        GiB for a 248k vocab at tp=2). The scheduler calls this before the
++        target KV pool is sized so those bytes reach the KV cache instead of
++        being stranded; alloc_memory_pool() calls it again and hits the guard.
++        """
++        if self._embed_and_head_shared:
++            return
++        self._embed_and_head_shared = True
++        init_token_map = getattr(self, "init_token_map", None)
++        if init_token_map is not None:
++            init_token_map()
++        self.init_lm_head()
++
+     def init_attention_backends(self):
+         """Subclasses wrap this with their context managers (draft_tp_context,
+         speculative_moe_backend_context, etc.) rather than reimplementing it."""
+@@ -187,6 +205,14 @@ def draft_worker(self) -> Optional[EagleDraftWorkerBase | TpModelWorker]:
+         # ngram has no draft worker at all (returns None via its override).
+         return self._draft_worker
+ 
++    def share_target_embed_and_head(self) -> None:
++        """Hand the target's embedding/lm_head to the draft worker, if it wants
++        them. No-op for algorithms whose draft owns its own vocab layers (or has
++        no draft worker at all)."""
++        share = getattr(self.draft_worker, "share_target_embed_and_head", None)
++        if share is not None:
++            share()
++
+     @property
+     def graph_memory_usage(self) -> dict[str, float]:
+         if self.draft_worker is None:
+diff --git a/python/sglang/srt/speculative/eagle_worker_v2.py b/python/sglang/srt/speculative/eagle_worker_v2.py
+index afdd57ac7b31..f49e39f688ae 100644
+--- a/python/sglang/srt/speculative/eagle_worker_v2.py
++++ b/python/sglang/srt/speculative/eagle_worker_v2.py
+@@ -209,8 +209,7 @@ def alloc_memory_pool(
+             req_to_token_pool=req_to_token_pool,
+             token_to_kv_pool_allocator=token_to_kv_pool_allocator,
+         )
+-        self.init_token_map()
+-        self.init_lm_head()
++        self.share_target_embed_and_head()
+ 
+         if get_spec().speculative_use_rejection_sampling:
+             target_vocab_size = self.target_worker.model_config.vocab_size
+diff --git a/python/sglang/srt/speculative/multi_layer_eagle_worker_v2.py b/python/sglang/srt/speculative/multi_layer_eagle_worker_v2.py
+index cb8b824431a6..8b94b0281bdd 100644
+--- a/python/sglang/srt/speculative/multi_layer_eagle_worker_v2.py
++++ b/python/sglang/srt/speculative/multi_layer_eagle_worker_v2.py
+@@ -209,7 +209,7 @@ def alloc_memory_pool(
+             req_to_token_pool=req_to_token_pool,
+             token_to_kv_pool_allocator=token_to_kv_pool_allocator,
+         )
+-        self.init_lm_head()
++        self.share_target_embed_and_head()
+         self._init_boundary_kv_fix_state()
+ 
+     def init_attention_backends(self):

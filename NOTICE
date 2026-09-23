@@ -1,0 +1,22 @@
+sglang-rtx5090-mtp
+Copyright 2026 the contributors of this repository.
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This repository contains code from SGLang (https://github.com/sgl-project/sglang), Apache License 2.0:
+
+- docker/mtpfix/pr37155.diff
+  The diff of SGLang pull request #37155 by its author(s)
+  (https://github.com/sgl-project/sglang/pull/37155), applied unchanged to SGLang v0.5.20.
+
+- docker/embhost/host_embedding_gather.py
+  Taken verbatim from SGLang pull request #37826 by its author(s)
+  (https://github.com/sgl-project/sglang/pull/37826); only the module docstring notes the backport.
+
+- docker/embhost/apply_embed_offload.py
+  A backport of the rest of pull request #37826 to SGLang v0.5.20. Modified: the feature is switched on by the
+  environment variable SGLANG_OFFLOAD_EMBEDDING_TO_HOST instead of the --offload-embedding-to-host server argument,
+  and the edits are applied at image build time by anchored text replacement.
+
+Model weights are not included. They are published by their owners under their own licenses:
+Qwen (Qwen3.8-27B), gittensor-model-hub (Qwen3.8-27B-NVFP4-RTX5090), RadixArk (Qwen3.8-27B-NVFP4),
+NVIDIA (Qwen3.6-35B-A3B-NVFP4).
