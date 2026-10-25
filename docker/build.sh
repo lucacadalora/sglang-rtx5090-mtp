@@ -4,12 +4,15 @@
 # Run from anywhere inside WSL (as a user that can run docker):  bash docker/build.sh
 set -euo pipefail
 cd "$(dirname "$0")"
-for f in mtpfix/pr37155.diff embhost/*.py embhost/Dockerfile mtpfix/Dockerfile k1/Dockerfile k1/*.py k1/patches/*.py; do
+for f in mtpfix/pr37155.diff embhost/*.py embhost/Dockerfile mtpfix/Dockerfile k1/Dockerfile k1/*.py k1/patches/*.py \
+         k2/Dockerfile k2/*.py k2/patches/*.py; do
   if grep -q $'\r' "$f"; then echo "error: $f has CRLF line endings (clone with core.autocrlf=false)"; exit 1; fi
 done
 docker build -t local/sglang:v0.5.20-cu130-mtpfix mtpfix
 docker build -t local/sglang:v0.5.20-cu130-mtpfix-embhost embhost
 # k1: env-gated kernel/runtime patches on top (every switch default off; see docs/K1_KERNELS.md)
 docker build -t local/sglang:v0.5.20-cu130-mtpfix-embhost-k1 k1
+# k2: env-gated HiCache patches on top (host-RAM KV tier; see docker/k2/Dockerfile)
+docker build -t local/sglang:v0.5.20-cu130-mtpfix-embhost-k2 k2
 docker run --rm --gpus all --entrypoint python3 local/sglang:v0.5.20-cu130-mtpfix-embhost \
   /opt/embed_offload/test_host_gather_wsl.py

@@ -58,6 +58,13 @@ Prefill is the one cost. Gates: typed tool calls 3/3, thinking on and off, image
 context (6/6 codes, 2/2 two-hop facts), prefix-cache churn 99.9-100%, 20/20 arithmetic problems with thinking on.
 Greedy output departs from the plain server at a near-tie token, as expected when verification batches positions.
 
+**Since then.** Production moved to k2 on 24 September: the host-RAM KV tier (HiCache, made to work under WSL2),
+the decode lock skipped, 7 requests at once. Re-measured on 25-26 October on a replacement card: 131-136 tok/s on one
+stream (benchmark median; 154-163 in the scheduler's steady lines), 609-627 at 5 and 784-805 at 7 streams, output
+still bit-identical to the September reference. The DFlash2 drafter was +11-18% on one stream but cost three
+quarters of the KV pool and capped concurrency at 3 on this card; [docs/DFLASH.md](docs/DFLASH.md) has the numbers,
+the reason (a per-draft-token verify scratch) and what a headless card changes.
+
 ![Total decode throughput](docs/img/throughput.svg)
 
 ## What changed
@@ -153,6 +160,26 @@ To roll back to the plain model, relaunch with `PROFILE=27b`. `PROFILE=moe` serv
 (303 tok/s single stream, 1,321 at 8 streams, 0.69 J per token); it needs `--moe-runner-backend flashinfer_cutlass`
 on the 5090, which the launcher sets.
 
+### On a rented RTX 5090 (vast.ai or any Linux box)
+
+No WSL, no Docker build: start the instance from `lmsysorg/sglang:v0.5.20-cu130` and run three scripts inside it.
+They patch SGLang in place with the same scripts as the Docker layers, fetch the pinned weights, graft the MTP head
+and serve the same profiles natively. See [deploy/vastai/README.md](deploy/vastai/README.md).
+
+```bash
+bash deploy/vastai/bootstrap.sh && bash deploy/vastai/serve.sh && bash deploy/vastai/check.sh
+```
+
+### On your own Ubuntu server
+
+The same scripts inside a long-lived container of the stock image, plus an A/B matrix of the MTP head against the
+DFlash2 drafter on prose, code and JSON workloads: [deploy/ubuntu/README.md](deploy/ubuntu/README.md).
+
+```bash
+bash deploy/ubuntu/container.sh up && bash deploy/ubuntu/container.sh shell
+MODELS="27b-mtp 27b-dflash" bash deploy/vastai/bootstrap.sh && bash deploy/vastai/serve.sh && bash deploy/ubuntu/ab_matrix.sh
+```
+
 ## Layout
 
 | Path | What it is |
@@ -162,6 +189,9 @@ on the 5090, which the launcher sets.
 | [docker/mtpfix](docker/mtpfix) | v0.5.20 + PR #37155 |
 | [docker/embhost](docker/embhost) | + PR #37826 backport (env-gated) and the WSL2 UVA test |
 | [docker/k1](docker/k1) | + five anchored, env-gated kernel/runtime patches (p1, p2, p3, p6, p7) and the build check |
+| [docker/k2](docker/k2) | + env-gated HiCache patches (host-RAM KV tier; the cudaHostAlloc pools that make it work under WSL2) |
+| [deploy/vastai](deploy/vastai) | Rented-GPU path: in-place bootstrap, native launcher (incl. the `27b-dflash` profile), acceptance check, speed probe, runbook |
+| [deploy/ubuntu](deploy/ubuntu) | Own Ubuntu server: container wrapper for the stock image, MTP vs DFlash2 A/B matrix, runbook |
 | [bench/ab_bench.py](bench/ab_bench.py) | A/B harness: server-side decode, prefill, energy, correctness fingerprint |
 | [bench/tok_equal.py](bench/tok_equal.py) | Temp-0 equality of 50 prompts (+3 at 32K/64K/120K) between two builds, with the p6 guard-log check |
 | [bench/near_tie.py](bench/near_tie.py) | Top-1 vs top-2 margin at the first token where greedy text diverges |
@@ -169,9 +199,10 @@ on the 5090, which the launcher sets.
 | [bench/profile](bench/profile) | Live torch-profiler capture (no restart) and a kernel/idle-gap summariser |
 | [bench/gates.py](bench/gates.py) | Functional gates: tools, thinking, image, long recall, cache churn |
 | [bench/arith_eval.py](bench/arith_eval.py) | 20 arithmetic problems with thinking on |
-| [bench/results](bench/results) | Raw rows from 23 and 24 September 2026 |
+| [bench/results](bench/results) | Raw rows from 23 and 24 September and 25-26 October 2026 |
 | [docs/REPORT.md](docs/REPORT.md) | The full write-up: physics, KV math, paging, MTP, rejected ideas |
 | [docs/K1_KERNELS.md](docs/K1_KERNELS.md) | The k1 write-up: cycle profile, reviewed plan, patches, test method, results |
+| [docs/DFLASH.md](docs/DFLASH.md) | The DFlash2 drafter A/B: numbers, the verify-scratch VRAM math, published 5090 numbers, next steps |
 
 ## Caveats
 
@@ -200,7 +231,9 @@ Built on [SGLang](https://github.com/sgl-project/sglang) (Apache-2.0). The MTP m
 [PR #37155](https://github.com/sgl-project/sglang/pull/37155) and the host-embedding gather is from
 [PR #37826](https://github.com/sgl-project/sglang/pull/37826), both by their authors; see [NOTICE](NOTICE). Weights:
 [gittensor-model-hub/Qwen3.8-27B-NVFP4-RTX5090](https://huggingface.co/gittensor-model-hub/Qwen3.8-27B-NVFP4-RTX5090)
-and [RadixArk/Qwen3.8-27B-NVFP4](https://huggingface.co/RadixArk/Qwen3.8-27B-NVFP4), from Qwen's Qwen3.8-27B.
+and [RadixArk/Qwen3.8-27B-NVFP4](https://huggingface.co/RadixArk/Qwen3.8-27B-NVFP4), from Qwen's Qwen3.8-27B;
+drafters [z-lab/Qwen3.8-27B-DFlash2](https://huggingface.co/z-lab/Qwen3.8-27B-DFlash2) and its community NVFP4
+conversion [maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal](https://huggingface.co/maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal).
 RTX 5090 specs from NVIDIA's
 [RTX Blackwell whitepaper](https://images.nvidia.com/aem-dam/Solutions/geforce/blackwell/nvidia-rtx-blackwell-gpu-architecture.pdf)
 (p. 47). This repository is licensed under [Apache-2.0](LICENSE).

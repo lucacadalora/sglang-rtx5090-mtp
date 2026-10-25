@@ -6,6 +6,13 @@ arguments and file paths were removed before publishing.
 - `ab_results_2026-09-23.jsonl`: the MTP and host-embedding work (23 September 2026).
 - `ab_results_2026-09-24_k1.jsonl`: the k1 kernel/runtime patches (24 September 2026, 03:20-04:40), with extra
   fields `flags` (k1 env switches on), `cycle_ms_bs1_median` and `accept_len_bs1` from `bench/accept_len.sh`.
+- `ab_results_2026-10-26.jsonl`: the production k2 server re-baselined on a replacement card (25 October, two runs)
+  and the DFlash2 drafter A/B against it (26 October; see [docs/DFLASH.md](../../docs/DFLASH.md)). Extra fields:
+  `date`, `streams` (the `--streams` levels of that run), `accept_len_bsN` (mean accepted tokens per verify step at
+  N running, from the scheduler log), `verify_scratch_gib`. The 25 October rows keep only the reviewed fields.
+  `joules_per_out_token` is comparable only between rows with the same `streams` (the power window covers the
+  multi-stream steps), and the `decode1_server` median includes the idle ramp: the scheduler's steady single-stream
+  lines read 154-163 tok/s on the same server.
 
 | Field | Meaning |
 |---|---|

@@ -11,13 +11,15 @@ Run in a throwaway CPU-only container (no --gpus), from the repo root:
   docker run --rm -v "${SGL_ROOT:-/opt/sglang}/huggingface:/root/.cache/huggingface" \
      -v "$PWD/scripts:/scripts:ro" --entrypoint python3 lmsysorg/sglang:v0.5.20-cu130 /scripts/graft_mtp.py
 Output: $SGL_ROOT/huggingface/local/gittensor-mtp (the path scripts/launch.sh expects).
-Override the snapshots with GT_SNAPSHOT / MTP_SOURCE_SNAPSHOT (paths relative to the HF cache root).
+Override the snapshots with GT_SNAPSHOT / MTP_SOURCE_SNAPSHOT (paths relative to the HF cache root), and the cache
+root itself with HF_CACHE_ROOT (deploy/vastai/bootstrap.sh runs it natively with HF_CACHE_ROOT=$HF_HOME). Only the
+source snapshot's index and the shard holding mtp.* (shard 3 of RadixArk's) are needed.
 """
 import json, os
 from safetensors import safe_open
 from safetensors.torch import save_file
 
-HF = "/root/.cache/huggingface"
+HF = os.environ.get("HF_CACHE_ROOT", "/root/.cache/huggingface")
 GT = os.environ.get("GT_SNAPSHOT",
                     "hub/models--gittensor-model-hub--Qwen3.8-27B-NVFP4-RTX5090/snapshots/5b7a687fc8211a5d631c8ca6a593dd37eb26ce33")
 RX = os.environ.get("MTP_SOURCE_SNAPSHOT",
